@@ -15,18 +15,9 @@ const MAX_RETRIES = 5;
 
 // List of channel IDs to process
 const CHANNEL_IDS = [
-    'UCYvVfuQo-9NhINSxJ-W_--Q',
-    'UCyBzV_g6Vfv5GM3aMQb3Y_A',
-    'UCrB8j1YCbuYhIcImwNkJgCg',
-    'UCPGNioeYrJq4nyAt-DVIHZg',
-    'UCEEi1lDCkKi1ukmTAgc9-zA',
-    'UCVIq229U5A54UVzHQJqZCPQ',
-    'UCcKMjICfQPjiVMpqS-yF7hA',
-    'UCWcQCJHYOK2ZZRA2Sym0mOw',
-    'UCn372MiubHTkPFwxKVv45LQ',
-    'UCUF0EGa7_yM4TXQl4LYt-YA',
-    'UCRidj8Tvrnf5jeIwzFDj0FQ',
-    'UCz67TNWBqU38S8VRvjDO2wg'
+    'UC0XWC2_UZMkXPGn4bj0R2Uw', //scary pumpkin
+    'UCpGhKw1m80zRsS7xUvUruaQ', //Once Upon A Time - Horror Hindi
+    'UC2OE2tbj4O3wo14M-tspGzw' //HORROR PODCAST SHOW
 ];
 
 // Internet Archive configuration
