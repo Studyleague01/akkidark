@@ -51,14 +51,14 @@ if (fs.existsSync(DOWNLOADS_JSON)) {
 }
 
 /**
- * Upload multiple files to Internet Archive with progress indication
+ * Upload multiple files to Internet Archive with enhanced progress indication
  * @param {Array} filesToUpload Array of {filePath, videoId, title} objects
  * @returns {Array} Results with success/failure for each file
  */
 async function batchUploadToInternetArchive(filesToUpload) {
     console.log(`📤 Batch uploading ${filesToUpload.length} files to Internet Archive...`);
     
-    // Create Python script for batch upload with progress updates
+    // Create Python script for batch upload with enhanced progress updates
     const pythonScript = `
 import os
 import sys
@@ -84,24 +84,51 @@ progress_data = {
     "total": total_files,
     "completed": 0,
     "current_file": "",
+    "current_title": "",
+    "current_size": 0,
+    "current_progress": 0,  # Upload percentage for current file
     "success_count": 0,
     "failed_count": 0,
-    "status_by_id": {}
+    "status_by_id": {},
+    "start_time": time.time(),
+    "last_update_time": time.time(),
+    "estimated_remaining": 0
 }
 
-def update_progress(video_id, status, message=""):
-    progress_data["completed"] += 1
+def update_progress(video_id, title, file_size, status, progress_pct=100, message=""):
+    now = time.time()
+    progress_data["completed"] += 1 if status or progress_pct >= 100 else 0
     progress_data["current_file"] = video_id
+    progress_data["current_title"] = title
+    progress_data["current_size"] = file_size
+    progress_data["current_progress"] = progress_pct
     
-    if status:
-        progress_data["success_count"] += 1
-    else:
-        progress_data["failed_count"] += 1
+    # Update success/failure counts only when a file is fully processed
+    if progress_pct >= 100:
+        if status:
+            progress_data["success_count"] += 1
+        else:
+            progress_data["failed_count"] += 1
     
     progress_data["status_by_id"][video_id] = {
-        "status": "success" if status else "failed",
-        "message": message
+        "status": "success" if status else "failed" if progress_pct >= 100 else "in_progress",
+        "progress": progress_pct,
+        "message": message,
+        "title": title,
+        "size": file_size
     }
+    
+    # Calculate time estimates
+    elapsed_time = now - progress_data["start_time"]
+    if progress_data["completed"] > 0:
+        avg_time_per_file = elapsed_time / progress_data["completed"]
+        remaining_files = total_files - progress_data["completed"]
+        # If current file is in progress, count it as partially complete
+        if progress_pct > 0 and progress_pct < 100:
+            remaining_files -= (progress_pct / 100)
+        progress_data["estimated_remaining"] = avg_time_per_file * remaining_files
+    
+    progress_data["last_update_time"] = now
     
     # Write progress to file
     with open(progress_file, 'w') as f:
@@ -109,7 +136,31 @@ def update_progress(video_id, status, message=""):
     
     # Print progress for stdout capture
     percent = (progress_data["completed"] / progress_data["total"]) * 100
-    print(f"PROGRESS_UPDATE: {percent:.1f}% complete ({progress_data['completed']}/{progress_data['total']}) - Currently processing: {video_id}")
+    if progress_pct < 100:
+        status_msg = f"UPLOADING: {video_id} - {progress_pct:.1f}% complete"
+    else:
+        status_msg = f"COMPLETED: {video_id} - {'SUCCESS' if status else 'FAILED'}"
+    
+    print(f"PROGRESS_UPDATE: {percent:.1f}% complete ({progress_data['completed']}/{progress_data['total']}) - {status_msg}")
+
+# Create upload callback to track individual file progress
+class UploadProgressCallback:
+    def __init__(self, file_info):
+        self.file_info = file_info
+        self.video_id = file_info["videoId"]
+        self.title = file_info["title"]
+        self.size = file_info["size"]
+        self.last_percent = 0
+        self.update_threshold = 5  # Update every 5% progress to avoid too frequent updates
+    
+    def __call__(self, bytes_sent, bytes_total):
+        if bytes_total > 0:
+            percent = (bytes_sent / bytes_total) * 100
+            # Only update if progress has increased by threshold amount
+            if percent - self.last_percent >= self.update_threshold or percent >= 100:
+                self.last_percent = percent
+                update_progress(self.video_id, self.title, self.size, True, percent)
+        return True
 
 # Start with empty progress file
 with open(progress_file, 'w') as f:
@@ -119,11 +170,18 @@ for index, item in enumerate(batch_data):
     filepath = item["filePath"]
     video_id = item["videoId"]
     title = item["title"]
+    file_size = item["size"]
     filename = os.path.basename(filepath)
     
     print(f"Uploading {filename} ({index+1}/{total_files})...")
     
+    # Create progress callback for this file
+    progress_callback = UploadProgressCallback(item)
+    
     try:
+        # First update to show we're starting this file
+        update_progress(video_id, title, file_size, True, 0, "Starting upload")
+        
         response = internetarchive.upload(
             identifier=identifier,
             files=[filepath],
@@ -140,7 +198,8 @@ for index, item in enumerate(batch_data):
                     "secret": secret_key
                 }
             },
-            verbose=True
+            verbose=True,
+            callback=progress_callback  # Use our custom callback
         )
         
         success = True
@@ -154,7 +213,8 @@ for index, item in enumerate(batch_data):
             else:
                 print(f"✅ Successfully uploaded {filename}")
         
-        update_progress(video_id, success, error_message)
+        # Final update with complete status
+        update_progress(video_id, title, file_size, success, 100, error_message)
         
         results.append({
             "videoId": video_id,
@@ -164,12 +224,15 @@ for index, item in enumerate(batch_data):
     except Exception as e:
         error_str = str(e)
         print(f"❌ Exception uploading {filename}: {error_str}")
-        update_progress(video_id, False, error_str)
+        update_progress(video_id, title, file_size, False, 100, error_str)
         
         results.append({
             "videoId": video_id,
             "success": False
         })
+    
+    # Short delay between uploads
+    time.sleep(1)
 
 # Output results as JSON
 print("FINAL_RESULTS:" + json.dumps(results))
@@ -185,24 +248,50 @@ print("FINAL_RESULTS:" + json.dumps(results))
         // Create progress tracking function
         const progressFilePath = path.join(TEMP_DOWNLOAD_DIR, "upload_progress.json");
         
-        // Setup progress monitoring
+        // Setup enhanced progress monitoring
         const progressInterval = setInterval(() => {
             try {
                 if (fs.existsSync(progressFilePath)) {
                     const progressData = JSON.parse(fs.readFileSync(progressFilePath, "utf-8"));
                     const percent = (progressData.completed / progressData.total) * 100;
-                    const progressBar = createProgressBar(percent);
+                    const progressBar = createDetailedProgressBar(percent);
+                    const elapsedMinutes = ((Date.now() / 1000) - progressData.start_time) / 60;
+                    const remainingMinutes = progressData.estimated_remaining / 60;
                     
-                    process.stdout.write(`\r${progressBar} ${percent.toFixed(1)}% | ${progressData.completed}/${progressData.total} | Success: ${progressData.success_count} | Failed: ${progressData.failed_count}`);
+                    // Clear the current line
+                    process.stdout.write("\r".padEnd(100, " "));
                     
-                    if (progressData.current_file) {
-                        process.stdout.write(` | Current: ${progressData.current_file}`);
+                    // Print overall progress
+                    process.stdout.write(`\r${progressBar} ${percent.toFixed(1)}% | ${progressData.completed}/${progressData.total} | ✓${progressData.success_count} | ✗${progressData.failed_count}`);
+                    
+                    // Add time estimates
+                    if (elapsedMinutes > 0 && progressData.completed > 0) {
+                        process.stdout.write(` | ⏱️ ${elapsedMinutes.toFixed(1)}m elapsed`);
+                        
+                        if (remainingMinutes > 0 && progressData.completed < progressData.total) {
+                            process.stdout.write(` | ⏳ ~${remainingMinutes.toFixed(1)}m remaining`);
+                        }
+                    }
+                    
+                    // Add details about current file if one is in progress
+                    if (progressData.current_file && progressData.current_progress < 100) {
+                        // Move to next line for file details
+                        process.stdout.write("\n");
+                        
+                        // Show progress for current file
+                        const fileProgressBar = createDetailedProgressBar(progressData.current_progress);
+                        const fileSizeMB = (progressData.current_size / (1024 * 1024)).toFixed(2);
+                        const truncatedTitle = progressData.current_title.length > 40 ? 
+                            progressData.current_title.substring(0, 37) + "..." : 
+                            progressData.current_title;
+                        
+                        process.stdout.write(`   ${fileProgressBar} ${progressData.current_progress.toFixed(1)}% | ${progressData.current_file} | ${fileSizeMB} MB | ${truncatedTitle}`);
                     }
                 }
             } catch (err) {
                 // Ignore progress reading errors
             }
-        }, 1000);
+        }, 500);
         
         // Run Python upload script with batch data
         const result = spawnSync("python", [scriptPath, batchDataJson], {
@@ -213,7 +302,7 @@ print("FINAL_RESULTS:" + json.dumps(results))
         
         // Stop progress monitoring
         clearInterval(progressInterval);
-        process.stdout.write("\n"); // Move to next line after progress bar
+        process.stdout.write("\n\n"); // Move to next line after progress bar
         
         if (result.status !== 0) {
             console.error(`❌ Batch upload script failed: ${result.stderr}`);
@@ -254,16 +343,22 @@ print("FINAL_RESULTS:" + json.dumps(results))
 }
 
 /**
- * Create a visual progress bar
+ * Create a detailed visual progress bar with color indicators
  * @param {number} percent Percentage complete (0-100)
- * @returns {string} ASCII progress bar
+ * @returns {string} Enhanced ASCII progress bar
  */
-function createProgressBar(percent) {
-    const width = 30;
+function createDetailedProgressBar(percent) {
+    const width = 25;
     const completed = Math.floor(width * (percent / 100));
-    const remaining = width - completed;
+    const current = percent < 100 && completed < width ? 1 : 0; 
+    const remaining = width - completed - current;
     
-    return `[${'='.repeat(completed)}${'-'.repeat(remaining)}]`;
+    // Use different characters for better visibility
+    const completedChar = '█';
+    const currentChar = '▓';
+    const remainingChar = '▒';
+    
+    return `[${completedChar.repeat(completed)}${currentChar.repeat(current)}${remainingChar.repeat(remaining)}]`;
 }
 
 /**
@@ -307,6 +402,60 @@ function commitChangesToJson() {
     } catch (err) {
         console.error("❌ Error committing file:", err.message);
     }
+}
+
+/**
+ * Download a file with progress tracking
+ * @param {string} url URL to download from
+ * @param {string} filePath Path to save file to
+ * @param {string} videoId Video ID for logging
+ * @returns {Promise<number>} File size in bytes
+ */
+async function downloadFileWithProgress(url, filePath, videoId) {
+    return new Promise(async (resolve, reject) => {
+        try {
+            const response = await axios({
+                url,
+                method: 'GET',
+                responseType: 'stream',
+                timeout: 60000
+            });
+            
+            const totalSize = parseInt(response.headers['content-length'] || 0);
+            let downloadedSize = 0;
+            let lastLoggedPercent = -5; // Start at -5 to ensure first update is printed
+            
+            // Create writer stream
+            const writer = fs.createWriteStream(filePath);
+            writer.on('error', err => reject(err));
+            writer.on('finish', () => {
+                process.stdout.write('\n'); // Move to next line after progress
+                resolve(downloadedSize);
+            });
+            
+            // Setup download progress tracking
+            response.data.on('data', chunk => {
+                downloadedSize += chunk.length;
+                
+                if (totalSize) {
+                    const percent = (downloadedSize / totalSize) * 100;
+                    // Only update every 5% to avoid console spam
+                    if (percent - lastLoggedPercent >= 5 || percent >= 99.9) {
+                        lastLoggedPercent = percent;
+                        const progressBar = createDetailedProgressBar(percent);
+                        const sizeMB = (downloadedSize / (1024 * 1024)).toFixed(2);
+                        const totalMB = (totalSize / (1024 * 1024)).toFixed(2);
+                        process.stdout.write(`\r📥 ${videoId}: ${progressBar} ${percent.toFixed(1)}% (${sizeMB}/${totalMB} MB)`);
+                    }
+                }
+            });
+            
+            // Pipe response to file
+            response.data.pipe(writer);
+        } catch (err) {
+            reject(err);
+        }
+    });
 }
 
 /**
@@ -357,21 +506,35 @@ async function processChannel(channelId) {
         const downloadedFiles = [];
         const failedIds = [];
 
-        // PHASE 1: DOWNLOAD ALL FILES - NO PROGRESS DISPLAY
+        // PHASE 1: DOWNLOAD ALL FILES - WITH PROGRESS DISPLAY
         console.log(`\n📥 PHASE 1: DOWNLOADING ALL FILES`);
         console.log(`${'='.repeat(50)}`);
+        
+        const downloadStartTime = Date.now();
         
         for (let i = 0; i < videosToProcess.length; i++) {
             const videoId = videosToProcess[i];
             const filename = `${videoId}.webm`;
             const filePath = path.join(TEMP_DOWNLOAD_DIR, filename);
 
-            // Just show which video we're currently working on (no progress bar)
-            console.log(`📥 Downloading (${i + 1}/${videosToProcess.length}): ${videoId}`);
+            // Calculate and show progress statistics
+            if (i > 0) {
+                const elapsedSeconds = (Date.now() - downloadStartTime) / 1000;
+                const avgTimePerVideo = elapsedSeconds / i;
+                const remainingVideos = videosToProcess.length - i;
+                const estimatedRemainingSeconds = avgTimePerVideo * remainingVideos;
+                const remainingMinutes = Math.floor(estimatedRemainingSeconds / 60);
+                const remainingSeconds = Math.floor(estimatedRemainingSeconds % 60);
+                
+                console.log(`\n⏱️ Progress: ${i}/${videosToProcess.length} videos (${(i/videosToProcess.length*100).toFixed(1)}%) | Est. remaining: ${remainingMinutes}m ${remainingSeconds}s`);
+            }
+            
+            console.log(`\n📥 Downloading video ${i + 1}/${videosToProcess.length}: ${videoId}`);
 
             let downloadSuccess = false;
             let videoTitle = `Video ${videoId}`;
             let usedFallback = false;
+            let fileSize = 0;
             
             for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
                 try {
@@ -422,24 +585,9 @@ async function processChannel(channelId) {
                         ? titleFromApi.replace(/\.mp3$/, '').trim() 
                         : `Video ${videoId}`;
 
-                    // Download the audio file
-                    const writer = fs.createWriteStream(filePath);
-                    const audioResponse = await axios({
-                        url,
-                        method: "GET",
-                        responseType: "stream",
-                        timeout: 60000
-                    });
-
-                    audioResponse.data.pipe(writer);
-
-                    await new Promise((resolve, reject) => {
-                        writer.on("finish", resolve);
-                        writer.on("error", reject);
-                    });
-
-                    // Get file size
-                    const fileSize = fs.statSync(filePath).size;
+                    // Download the audio file with progress
+                    console.log(`📥 Starting download from ${usedFallback ? 'fallback' : 'primary'} API source...`);
+                    fileSize = await downloadFileWithProgress(url, filePath, videoId);
 
                     if (fileSize === 0) {
                         throw new Error("Downloaded file size is 0 bytes");
@@ -492,12 +640,12 @@ async function processChannel(channelId) {
         console.log(`📥 Download phase complete: ${downloadedFiles.length} files downloaded, ${failedIds.length} failed`);
         console.log(`🔀 Used fallback API for ${fallbackCount} downloads`);
 
-        // PHASE 2: BATCH UPLOAD ALL DOWNLOADED FILES - WITH PROGRESS DISPLAY
+        // PHASE 2: BATCH UPLOAD ALL DOWNLOADED FILES - WITH ENHANCED PROGRESS DISPLAY
         console.log(`\n📤 PHASE 2: BATCH UPLOADING ${downloadedFiles.length} FILES`);
         console.log(`${'='.repeat(50)}`);
         
         if (downloadedFiles.length > 0) {
-            // Batch upload all files
+            // Batch upload all files with enhanced progress reporting
             const uploadResults = await batchUploadToInternetArchive(downloadedFiles);
             
             console.log(`\n${'-'.repeat(50)}`);
@@ -610,11 +758,26 @@ async function processChannel(channelId) {
         let totalErrors = 0;
         let totalVideos = 0;
         let totalFallbackUsed = 0;
+        
+        const totalStartTime = Date.now();
 
         // Process each channel one by one
         for (let i = 0; i < CHANNEL_IDS.length; i++) {
             const channelId = CHANNEL_IDS[i];
+            const channelStartTime = Date.now();
+            
             console.log(`\n🎬 Processing channel ${i+1}/${CHANNEL_IDS.length}: ${channelId}`);
+            
+            // Calculate progress if we have processed some channels
+            if (i > 0) {
+                const elapsedMinutes = (Date.now() - totalStartTime) / 1000 / 60;
+                const avgTimePerChannel = elapsedMinutes / i;
+                const remainingChannels = CHANNEL_IDS.length - i;
+                const estRemainingMinutes = avgTimePerChannel * remainingChannels;
+                
+                console.log(`⏱️ Overall progress: ${i}/${CHANNEL_IDS.length} channels (${(i/CHANNEL_IDS.length*100).toFixed(1)}%)`);
+                console.log(`⏱️ Time elapsed: ${elapsedMinutes.toFixed(1)} minutes | Est. remaining: ${estRemainingMinutes.toFixed(1)} minutes`);
+            }
             
             const result = await processChannel(channelId);
             channelResults.push(result);
@@ -624,6 +787,10 @@ async function processChannel(channelId) {
             totalErrors += result.errors;
             totalVideos += result.total;
             totalFallbackUsed += result.fallbackUsed || 0;
+            
+            // Report time taken for this channel
+            const channelMinutes = (Date.now() - channelStartTime) / 1000 / 60;
+            console.log(`⏱️ Channel completed in ${channelMinutes.toFixed(1)} minutes`);
             
             // Clean up any temporary files that might remain
             try {
@@ -642,10 +809,14 @@ async function processChannel(channelId) {
             }
         }
 
+        // Calculate total time
+        const totalMinutes = (Date.now() - totalStartTime) / 1000 / 60;
+
         // Print final summary
         console.log(`\n\n${'='.repeat(80)}`);
         console.log(`📊 FINAL SUMMARY FOR ALL ${CHANNEL_IDS.length} CHANNELS`);
         console.log(`${'='.repeat(80)}`);
+        console.log(`⏱️ Total execution time: ${totalMinutes.toFixed(1)} minutes`);
         console.log(`Total videos found: ${totalVideos}`);
         console.log(`✅ Successfully processed: ${totalProcessed} videos`);
         console.log(`⏭️ Skipped (already processed): ${totalSkipped} videos`);
