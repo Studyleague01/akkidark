@@ -15,6 +15,18 @@ const MAX_RETRIES = 5;
 
 // List of channel IDs to process
 const CHANNEL_IDS = [
+    'UCYvVfuQo-9NhINSxJ-W_--Q', // Skull Tales
+    'UCyBzV_g6Vfv5GM3aMQb3Y_A', // Alpha Akki
+    'UCrB8j1YCbuYhIcImwNkJgCg', // Alpha Akki Dark
+    'UCPGNioeYrJq4nyAt-DVIHZg', // SR PAY STORIES
+    'UCEEi1lDCkKi1ukmTAgc9-zA', // ShivamIsOn
+    'UCVIq229U5A54UVzHQJqZCPQ', // Akshay Vashisht
+    'UCcKMjICfQPjiVMpqS-yF7hA', // Thrill Tales
+    'UCWcQCJHYOK2ZZRA2Sym0mOw', // Amaan Parkar
+    'UCn372MiubHTkPFwxKVv45LQ', // Fintale
+    'UCUF0EGa7_yM4TXQl4LYt-YA', // Alpha Crime
+    'UCRidj8Tvrnf5jeIwzFDj0FQ', // BADMASH icON
+    'UCz67TNWBqU38S8VRvjDO2wg'  // Khooni Monday
     'UC0XWC2_UZMkXPGn4bj0R2Uw', //scary pumpkin
     'UCpGhKw1m80zRsS7xUvUruaQ', //Once Upon A Time - Horror Hindi
     'UC2OE2tbj4O3wo14M-tspGzw' //HORROR PODCAST SHOW
